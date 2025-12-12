@@ -70,7 +70,7 @@ jobs:
   # -----------------------------------------------------------
   # DEPLOY TO ECS — NO TASK DEFINITION FILE
   # -----------------------------------------------------------
-  deploy:
+  d  deploy:
     needs: build_and_push
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
@@ -82,10 +82,21 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Update ECS Service Image
+      - name: Register new task definition revision
+        id: taskdef
+        run: |
+          NEW_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}"
+          TASK_DEF=$(aws ecs describe-task-definition --task-definition ecs-backend-task)
+          NEW_TASK_DEF=$(echo $TASK_DEF | jq --arg IMAGE "$NEW_IMAGE" '.taskDefinition | .containerDefinitions[0].image = $IMAGE | {containerDefinitions, family, executionRoleArn, networkMode, requiresCompatibilities, cpu, memory}')
+          echo "$NEW_TASK_DEF" > new-task-def.json
+          aws ecs register-task-definition --cli-input-json file://new-task-def.json
+
+      - name: Update ECS service
         run: |
           aws ecs update-service \
             --cluster $CLUSTER_NAME \
             --service $SERVICE_NAME \
+            --task-definition ecs-backend-task \
             --force-new-deployment
+
 
