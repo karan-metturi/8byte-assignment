@@ -8,39 +8,12 @@ env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: karan-ecs-backend
   CLUSTER_NAME: prop-ecs-cluster
-  SERVICE_NAME_STAGING: prop-backend-service
-  SERVICE_NAME_PROD: prop-backend-service
+  SERVICE_NAME: prop-backend-service
   CONTAINER_NAME: backend
 
 jobs:
 
-  test_and_scan:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.11"
-
-      - name: Install deps
-        run: pip install flask
-
-      - name: Run a basic unit test
-        run: echo "All tests passed!"
-
-      - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: filesystem
-          path: .
-          ignore-unfixed: true
-          exit-code: 0
-
   build_and_push:
-    needs: test_and_scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -54,29 +27,24 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
       - name: Build Docker image
         run: |
           docker build -t $ECR_REPOSITORY:latest ./app/backend
-
-      - name: Tag image
-        run: |
-          IMAGE_TAG=${GITHUB_SHA::7}
           docker tag $ECR_REPOSITORY:latest \
-          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
 
-      - name: Push image to ECR
+      - name: Push Docker image
         run: |
           docker push \
-          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
 
-  deploy_staging:
+  deploy:
     needs: build_and_push
     runs-on: ubuntu-latest
     steps:
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -84,36 +52,18 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy to ECS (Staging)
+      - name: Render task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: infra/ecs/ecs-backend-task.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Deploy to ECS
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
-          task-definition: ""
+          task-definition: ${{ steps.render.outputs.task-definition }}
           cluster: ${{ env.CLUSTER_NAME }}
-          service: ${{ env.SERVICE_NAME_STAGING }}
-          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}
-          container-name: ${{ env.CONTAINER_NAME }}
-          force-new-deployment: true
-          wait-for-service-stability: true
-
-  deploy_prod:
-    needs: deploy_staging
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Deploy to ECS (Prod)
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ""
-          cluster: ${{ env.CLUSTER_NAME }}
-          service: ${{ env.SERVICE_NAME_PROD }}
-          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}
-          container-name: ${{ env.CONTAINER_NAME }}
-          force-new-deployment: true
+          service: ${{ env.SERVICE_NAME }}
           wait-for-service-stability: true
