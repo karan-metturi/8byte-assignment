@@ -54,12 +54,13 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build Docker Image
-        run: docker build -t $ECR_REPOSITORY ./app/backend
+        run: docker build -t karan-ecs-backend ./app/backend
+
 
       - name: Tag Image
         run: |
           IMAGE_TAG=${GITHUB_SHA::7}
-          docker tag $ECR_REPOSITORY:latest \
+          docker tag karan-ecs-backend:latest \
           ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
