@@ -1,0 +1,23 @@
+{
+    "family": "karan-backend-task",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "256",
+    "memory": "512",
+    "executionRoleArn": "arn:aws:iam::<YOUR_ACCOUNT>:role/ecsTaskExecutionRole",
+    "containerDefinitions": [
+      {
+        "name": "backend",
+        "image": "593732352841.dkr.ecr.ap-south-1.amazonaws.com/karan-ecs-backend:latest",
+        "portMappings": [
+          {
+            "containerPort": 80,
+            "hostPort": 80,
+            "protocol": "tcp"
+          }
+        ],
+        "essential": true
+      }
+    ]
+  }
+  
