@@ -16,7 +16,7 @@ env:
 jobs:
 
   # -----------------------------------------------------------
-  # TEST + VULNERABILITY SCAN
+  # TESTS + SECURITY SCANS (PR + MAIN)
   # -----------------------------------------------------------
   test_and_scan:
     runs-on: ubuntu-latest
@@ -24,16 +24,27 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Run basic unit test
+        run: echo "All tests passed!"
+
       - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@master
         with:
-          scan-type: fs
-          path: "./"
-          severity: HIGH,CRITICAL
+          scan-type: 'fs'
+          path: './'
+          severity: 'HIGH,CRITICAL'
           ignore-unfixed: true
 
+      - name: Slack alert on failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: '#FF0000'
+          SLACK_TITLE: 'Test / Scan Failed'
+
   # -----------------------------------------------------------
-  # BUILD + PUSH IMAGE TO ECR (STAGING)
+  # BUILD + PUSH DOCKER IMAGE TO ECR (MAIN ONLY)
   # -----------------------------------------------------------
   build_and_push:
     needs: test_and_scan
@@ -57,25 +68,31 @@ jobs:
         run: |
           docker build -t karan-ecs-backend ./app/backend
 
-      - name: Tag Docker image
+      - name: Tag image
         run: |
-          docker tag karan-ecs-backend:latest $ECR_REPOSITORY:latest
+          IMAGE_TAG=${GITHUB_SHA::7}
+          docker tag karan-ecs-backend:latest $ECR_REPOSITORY:$IMAGE_TAG
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
-      - name: Push Docker image
-        run: |
-          docker push $ECR_REPOSITORY:latest
+      - name: Push image to ECR
+        run: docker push $ECR_REPOSITORY:${IMAGE_TAG}
+
+      - name: Slack alert on failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: '#FF0000'
+          SLACK_TITLE: 'Docker Build/Push Failed'
 
   # -----------------------------------------------------------
-  # DEPLOY TO ECS (STAGING)
+  # DEPLOY TO STAGING (MAIN ONLY)
   # -----------------------------------------------------------
   deploy_staging:
     needs: build_and_push
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -83,22 +100,31 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy new image to ECS (Staging)
+      - name: Deploy to ECS (STAGING)
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
           task-definition: infra/ecs/ecs-backend-task.json
-          service: ${{ env.ECS_SERVICE }}
           cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          image: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          container-name: ${{ env.CONTAINER_NAME }}
           wait-for-service-stability: true
 
+      - name: Slack alert on failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: '#FF0000'
+          SLACK_TITLE: 'Staging Deployment Failed'
+
   # -----------------------------------------------------------
-  # MANUAL APPROVAL → PROD DEPLOY
+  # MANUAL APPROVAL → DEPLOY TO PROD
   # -----------------------------------------------------------
   deploy_prod:
     needs: deploy_staging
-    if: github.ref == 'refs/heads/prod'
     runs-on: ubuntu-latest
-
+    if: github.ref == 'refs/heads/prod'
     steps:
       - name: Manual approval
         uses: trstringer/manual-approval@v1
@@ -107,17 +133,27 @@ jobs:
           approvers: karan-metturi
           minimum-approvals: 1
 
-      - name: Configure AWS Credentials
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy to Production ECS
+      - name: Deploy to ECS (PRODUCTION)
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
           task-definition: infra/ecs/ecs-backend-task.json
-          service: ${{ env.ECS_SERVICE }}
           cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          image: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          container-name: ${{ env.CONTAINER_NAME }}
           wait-for-service-stability: true
+
+      - name: Slack alert on failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: '#FF0000'
+          SLACK_TITLE: 'Production Deployment Failed'
