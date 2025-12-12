@@ -5,6 +5,7 @@
     "cpu": "256",
     "memory": "512",
     "executionRoleArn": "arn:aws:iam::593732352841:role/ecsTaskExecutionRole",
+    "taskRoleArn": "arn:aws:iam::593732352841:role/ecsTaskExecutionRole",
     "containerDefinitions": [
       {
         "name": "backend",
@@ -12,7 +13,7 @@
         "portMappings": [
           {
             "containerPort": 80,
-            "hostPort": 80,
+            "hostPort": 0,
             "protocol": "tcp"
           }
         ],
