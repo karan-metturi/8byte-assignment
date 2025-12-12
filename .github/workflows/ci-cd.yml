@@ -8,128 +8,84 @@ on:
 
 env:
   AWS_REGION: ap-south-1
-  ECR_REPOSITORY: 593732352841.dkr.ecr.ap-south-1.amazonaws.com/karan-ecs-backend
-  ECS_CLUSTER: prop-ecs-cluster
-  ECS_SERVICE: prop-backend-service
+  ECR_REPOSITORY: karan-ecs-backend
+  CLUSTER_NAME: prop-ecs-cluster
+  SERVICE_NAME: prop-backend-service
   CONTAINER_NAME: backend
 
 jobs:
 
   # -----------------------------------------------------------
-  # TESTS + SECURITY SCANS (PR + MAIN)
+  # TEST + SCAN
   # -----------------------------------------------------------
   test_and_scan:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Run basic unit test
-        run: echo "All tests passed!"
+      - name: Run unit tests
+        run: echo "Tests passed!"
 
-      - name: Trivy vulnerability scan
+      - name: Vulnerability Scan
         uses: aquasecurity/trivy-action@master
         with:
-          scan-type: 'fs'
-          path: './'
-          severity: 'HIGH,CRITICAL'
+          scan-type: filesystem
+          path: .
           ignore-unfixed: true
 
-      
-
   # -----------------------------------------------------------
-  # BUILD + PUSH DOCKER IMAGE TO ECR (MAIN ONLY)
+  # BUILD + PUSH IMAGE
   # -----------------------------------------------------------
   build_and_push:
     needs: test_and_scan
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Configure AWS credentials
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to Amazon ECR
+      - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
-        run: |
-          docker build -t karan-ecs-backend ./app/backend
+      - name: Build Docker Image
+        run: docker build -t $ECR_REPOSITORY ./app/backend
 
-      - name: Tag image
+      - name: Tag Image
         run: |
           IMAGE_TAG=${GITHUB_SHA::7}
-          docker tag karan-ecs-backend:latest $ECR_REPOSITORY:$IMAGE_TAG
+          docker tag $ECR_REPOSITORY:latest \
+          ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
 
-      - name: Push image to ECR
-        run: docker push $ECR_REPOSITORY:${IMAGE_TAG}
-
-      
+      - name: Push Image
+        run: docker push \
+          ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${IMAGE_TAG}
 
   # -----------------------------------------------------------
-  # DEPLOY TO STAGING (MAIN ONLY)
+  # DEPLOY TO ECS — NO TASK DEFINITION FILE
   # -----------------------------------------------------------
-  deploy_staging:
+  deploy:
     needs: build_and_push
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:
-      - name: Configure AWS credentials
+      - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy to ECS (STAGING)
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ./infra/ecs/ecs-backend-task.json
-          cluster: ${{ env.ECS_CLUSTER }}
-          service: ${{ env.ECS_SERVICE }}
-          image: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-          container-name: ${{ env.CONTAINER_NAME }}
-          wait-for-service-stability: true
+      - name: Update ECS Service Image
+        run: |
+          aws ecs update-service \
+            --cluster $CLUSTER_NAME \
+            --service $SERVICE_NAME \
+            --force-new-deployment
 
-      
-
-  # -----------------------------------------------------------
-  # MANUAL APPROVAL → DEPLOY TO PROD
-  # -----------------------------------------------------------
-  deploy_prod:
-    needs: deploy_staging
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/prod'
-    steps:
-      - name: Manual approval
-        uses: trstringer/manual-approval@v1
-        with:
-          secret: ${{ secrets.GITHUB_TOKEN }}
-          approvers: karan-metturi
-          minimum-approvals: 1
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Deploy to ECS (PRODUCTION)
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ./infra/ecs/ecs-backend-task.json
-          cluster: ${{ env.ECS_CLUSTER }}
-          service: ${{ env.ECS_SERVICE }}
-          image: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-          container-name: ${{ env.CONTAINER_NAME }}
-          wait-for-service-stability: true
-
-      
