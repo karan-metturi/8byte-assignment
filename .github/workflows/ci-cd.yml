@@ -1,20 +1,44 @@
-name: Full CI/CD Pipeline
+name: CI-CD-Pipeline
 
 on:
+  pull_request:
+    branches: [ main ]
   push:
-    branches: [ "main" ]
+    branches: [ main, prod ]
 
 env:
   AWS_REGION: ap-south-1
-  ECR_REPOSITORY: karan-ecs-backend
-  CLUSTER_NAME: prop-ecs-cluster
-  SERVICE_NAME: prop-backend-service
+  ECR_REPOSITORY: 593732352841.dkr.ecr.ap-south-1.amazonaws.com/karan-ecs-backend
+  ECS_CLUSTER: prop-ecs-cluster
+  ECS_SERVICE: prop-backend-service
   CONTAINER_NAME: backend
 
 jobs:
 
-  build_and_push:
+  # -----------------------------------------------------------
+  # TEST + VULNERABILITY SCAN
+  # -----------------------------------------------------------
+  test_and_scan:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          path: "./"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+  # -----------------------------------------------------------
+  # BUILD + PUSH IMAGE TO ECR (STAGING)
+  # -----------------------------------------------------------
+  build_and_push:
+    needs: test_and_scan
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -27,23 +51,30 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v1
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build Docker image
         run: |
-          docker build -t $ECR_REPOSITORY:latest ./app/backend
-          docker tag $ECR_REPOSITORY:latest \
-          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          docker build -t karan-ecs-backend ./app/backend
+
+      - name: Tag Docker image
+        run: |
+          docker tag karan-ecs-backend:latest $ECR_REPOSITORY:latest
 
       - name: Push Docker image
         run: |
-          docker push \
-          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          docker push $ECR_REPOSITORY:latest
 
-  deploy:
+  # -----------------------------------------------------------
+  # DEPLOY TO ECS (STAGING)
+  # -----------------------------------------------------------
+  deploy_staging:
     needs: build_and_push
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
@@ -52,18 +83,41 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Render task definition
-        id: render
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: infra/ecs/ecs-backend-task.json
-          container-name: ${{ env.CONTAINER_NAME }}
-          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
-
-      - name: Deploy to ECS
+      - name: Deploy new image to ECS (Staging)
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
-          task-definition: ${{ steps.render.outputs.task-definition }}
-          cluster: ${{ env.CLUSTER_NAME }}
-          service: ${{ env.SERVICE_NAME }}
+          task-definition: ecs-backend-task.json
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+  # -----------------------------------------------------------
+  # MANUAL APPROVAL → PROD DEPLOY
+  # -----------------------------------------------------------
+  deploy_prod:
+    needs: deploy_staging
+    if: github.ref == 'refs/heads/prod'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Manual approval
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ secrets.GITHUB_TOKEN }}
+          approvers: karan-metturi
+          minimum-approvals: 1
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to Production ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ecs-backend-task.json
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
           wait-for-service-stability: true
